@@ -1,9 +1,0 @@
-fastapi
-uvicorn
-python-multipart
-torch
-transformers
-sentencepiece
-Pillow
-PyMuPDF
-reportlab
