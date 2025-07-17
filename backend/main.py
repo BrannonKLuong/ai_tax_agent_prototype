@@ -9,9 +9,7 @@ import re
 import io
 
 # --- AI/ML and Image Processing Imports ---
-# New dependencies are required for this AI-powered version.
-# Please install them using pip:
-# pip install torch transformers sentencepiece
+# Please ensure these are installed: pip install torch transformers sentencepiece
 import torch
 from transformers import pipeline
 from PIL import Image
@@ -27,26 +25,31 @@ logger = logging.getLogger(__name__)
 
 # --- FastAPI App Initialization ---
 app = FastAPI()
-origins = ["http://localhost:8081", "http://127.0.0.1:8081", "exp://*", "http://localhost:19006"]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# --- CORS Configuration ---
+# This list tells your backend which frontend URLs are allowed to make requests.
+# We've added a placeholder for your new Netlify site.
+origins = [
+    "http://localhost:8081", # For local web development
+    "http://127.0.0.1:8081",
+    "https://your-netlify-app-name.netlify.app", # ** IMPORTANT: REPLACE THIS WITH YOUR ACTUAL NETLIFY URL **
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # --- AI/ML Model Initialization ---
-# This section sets up the Document Question Answering pipeline.
-# The model will be downloaded from the Hugging Face Hub on the first run.
 try:
-    # Check for GPU availability and set the device accordingly.
     device = 0 if torch.cuda.is_available() else -1
-    if device == 0:
-        logger.info("GPU detected. Initializing AI model on GPU for faster processing.")
-    else:
-        logger.info("No GPU detected. Initializing AI model on CPU. Processing will be slower.")
-
-    # Initialize the pipeline for document question answering
-    doc_qa_pipeline = pipeline(
-        "document-question-answering",
-        model="impira/layoutlm-document-qa",
-        device=device
-    )
+    log_msg = "GPU detected. Initializing AI model on GPU." if device == 0 else "No GPU detected. Initializing AI model on CPU."
+    logger.info(log_msg)
+    doc_qa_pipeline = pipeline("document-question-answering", model="impira/layoutlm-document-qa", device=device)
     logger.info("AI Document Question Answering model loaded successfully.")
 except Exception as e:
     logger.error(f"Failed to load AI model. The main functionality will not work. Error: {e}", exc_info=True)
@@ -94,44 +97,56 @@ def clean_and_convert_to_float(text: str) -> float:
             
     return max(valid_numbers) if valid_numbers else 0.0
 
-def extract_data_with_ai(image: Image.Image) -> Dict[str, Any]:
+def is_likely_tax_form_page(page_text: str) -> bool:
     """
-    Uses a two-stage AI process: first classify the document, then extract data.
-    This is more robust than rule-based pre-filtering.
+    A heuristic to determine if a page is likely a real tax form and not just instructions.
+    Real forms usually contain multiple of these keywords in a structured way.
+    """
+    form_indicators = [
+        r"OMB No\.",
+        r"Employer identification number",
+        r"PAYER'S.*TIN",
+        r"RECIPIENT'S.*TIN",
+        r"Copy [A-Z0-9]",
+        r"Form \d{4}-?[A-Z]{2,3}"
+    ]
+    
+    match_count = sum(1 for pattern in form_indicators if re.search(pattern, page_text, re.IGNORECASE))
+    return match_count >= 2
+
+def extract_data_with_ai(image: Image.Image, page_text: str) -> Dict[str, Any]:
+    """
+    Uses a more precise pre-filtering check and more specific questions to guide the AI model.
     """
     if not doc_qa_pipeline:
         raise RuntimeError("AI model is not available.")
 
     extracted_data = {"form_type": "unknown", "fields": {}}
-    CONFIDENCE_THRESHOLD = 0.5  # Increased threshold for higher quality answers
-
-    # --- Stage 1: AI-based Classification ---
-    classification_q = "What type of document is this: W-2, 1099-NEC, or 1099-INT?"
-    logger.info(f"Asking AI to classify document: '{classification_q}'")
-    classification_answers = doc_qa_pipeline(image=image, question=classification_q)
     
-    detected_form_key = None
-    if classification_answers:
-        best_answer = sorted(classification_answers, key=lambda x: x['score'], reverse=True)[0]
-        answer_text = best_answer['answer'].upper()
-        score = best_answer['score']
-        logger.info(f"AI classification answer: '{answer_text}' (Score: {score:.2f})")
-
-        if score > CONFIDENCE_THRESHOLD:
-            if "W-2" in answer_text or "WAGE" in answer_text:
-                detected_form_key = "W-2"
-            elif "NEC" in answer_text:
-                detected_form_key = "1099-NEC"
-            elif "INT" in answer_text:
-                detected_form_key = "1099-INT"
-
-    if not detected_form_key:
-        logger.info("AI could not confidently classify the page as a target tax form. Skipping.")
+    if not is_likely_tax_form_page(page_text):
+        logger.info("Page does not appear to be a standard tax form based on structural keywords. Skipping AI analysis.")
         return extracted_data
 
-    # --- Stage 2: Data Extraction for the Classified Form ---
+    logger.info("Page appears to be a real tax form. Running AI analysis.")
+    
+    form_type_keywords = {
+        "W-2": "Wages, tips, other compensation",
+        "1099-NEC": "Nonemployee compensation",
+        "1099-INT": "Interest Income"
+    }
+    
+    detected_form_key = "unknown"
+    for form, keyword in form_type_keywords.items():
+        if re.search(keyword, page_text, re.IGNORECASE):
+            detected_form_key = form
+            break
+            
+    if detected_form_key == "unknown":
+        logger.warning("Could not determine form type for this page, despite it looking like a form.")
+        return extracted_data
+
     extracted_data["form_type"] = detected_form_key
-    logger.info(f"Form confidently classified as {detected_form_key}. Proceeding with data extraction.")
+    logger.info(f"Form type classified as: {detected_form_key}")
 
     questions = {
         "W-2": {
@@ -145,6 +160,8 @@ def extract_data_with_ai(image: Image.Image) -> Dict[str, Any]:
             "interest_income": "What is the amount in box 1 for 'Interest Income'?",
         }
     }
+
+    CONFIDENCE_THRESHOLD = 0.1
 
     for field, question in questions[detected_form_key].items():
         logger.info(f"Asking AI: '{question}'")
@@ -161,6 +178,7 @@ def extract_data_with_ai(image: Image.Image) -> Dict[str, Any]:
                 logger.warning(f"AI answer '{best_answer['answer']}' rejected due to low confidence score ({score:.2f}).")
             
     return extracted_data
+
 
 # --- Tax Calculation and Form Generation ---
 
@@ -192,20 +210,17 @@ def generate_form_1040(tax_summary: Dict[str, Any], personal_info: Dict[str, Any
     c = canvas.Canvas(output_path, pagesize=letter)
     width, height = letter
 
-    # --- Header Information (Simplified) ---
     c.setFont("Helvetica-Bold", 16)
     c.drawString(72, height - 72, "DRAFT - Form 1040 (2024)")
     c.setFont("Helvetica", 10)
     c.drawString(72, height - 90, "This is a computer-generated draft for demonstration purposes only.")
 
-    # --- Personal Information ---
     c.setFont("Helvetica-Bold", 10)
     c.drawString(72, height - 120, "Filing Information")
     c.setFont("Helvetica", 10)
     c.drawString(72, height - 135, f"Filing Status: {personal_info.get('filing_status', 'N/A')}")
     c.drawString(72, height - 150, f"Dependents: {personal_info.get('num_dependents', 'N/A')}")
 
-    # --- Income Section ---
     c.setFont("Helvetica-Bold", 10)
     c.drawString(72, height - 200, "Income & Deductions")
     c.setFont("Helvetica", 10)
@@ -215,14 +230,13 @@ def generate_form_1040(tax_summary: Dict[str, Any], personal_info: Dict[str, Any
     c.drawString(72, height - 230, f"Standard Deduction ({personal_info.get('filing_status', 'N/A')}):")
     c.drawString(450, height - 230, f"${tax_summary.get('standard_deduction_applied', 0.0):,.2f}")
 
-    c.line(72, height - 240, 522, height - 240) # Separator line
+    c.line(72, height - 240, 522, height - 240)
 
     c.setFont("Helvetica-Bold", 10)
     c.drawString(72, height - 255, f"Taxable Income:")
     c.drawString(450, height - 255, f"${tax_summary.get('taxable_income', 0.0):,.2f}")
 
 
-    # --- Tax & Payments ---
     c.setFont("Helvetica-Bold", 10)
     c.drawString(72, height - 300, "Tax, Payments, and Refund")
     c.setFont("Helvetica", 10)
@@ -232,23 +246,20 @@ def generate_form_1040(tax_summary: Dict[str, Any], personal_info: Dict[str, Any
     c.drawString(72, height - 330, f"Total Federal Tax Withheld:")
     c.drawString(450, height - 330, f"${tax_summary.get('total_federal_withheld', 0.0):,.2f}")
 
-    c.line(72, height - 340, 522, height - 340) # Separator line
+    c.line(72, height - 340, 522, height - 340)
 
-    # --- Final Result ---
     c.setFont("Helvetica-Bold", 12)
     final_amount = tax_summary.get('tax_due_or_refund', 0.0)
     if final_amount < 0:
-        c.setFillColorRGB(0, 0.5, 0) # Green for refund
+        c.setFillColorRGB(0, 0.5, 0)
         c.drawString(72, height - 360, f"Your Estimated REFUND:")
         c.drawString(450, height - 360, f"${abs(final_amount):,.2f}")
     else:
-        c.setFillColorRGB(0.8, 0, 0) # Red for amount owed
+        c.setFillColorRGB(0.8, 0, 0)
         c.drawString(72, height - 360, f"Amount YOU OWE:")
         c.drawString(450, height - 360, f"${final_amount:,.2f}")
     
-    # This is the crucial step to finalize the page.
     c.showPage()
-    # Now, save the PDF.
     c.save()
 
 # --- API Endpoints ---
@@ -277,9 +288,9 @@ async def upload_tax_documents(files: List[UploadFile] = File(...), filing_statu
                 
                 pix = page.get_pixmap(dpi=200)
                 image = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+                page_text = page.get_text("text")
 
-                # Use the new AI function with AI-based classification
-                extracted_info = extract_data_with_ai(image)
+                extracted_info = extract_data_with_ai(image, page_text)
                 
                 if extracted_info["form_type"] != "unknown":
                     processed_files_summary.append(extracted_info)
