@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+.pytest_cache/
+.mypy_cache/
+
+# Node/React Native
+node_modules/
+.expo/
+.react-native/
+.vscode/
+build/
+dist/
+*.log
+ios/build/
+android/build/
+android/.gradle/
+*.iml
+*.xcworkspace/
+.DS_Store
+Podfile.lock # For iOS Cocoapods dependencies
+web-build/ # For React Native Web specific build output
+web/dist/ # Common output directory for RN Web
+/public/build/ # Another common output dir for RN Web
