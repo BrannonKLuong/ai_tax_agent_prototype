@@ -33,10 +33,8 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True
 # --- AI/ML Model Initialization ---
 # This section sets up the Document Question Answering pipeline.
 # The model will be downloaded from the Hugging Face Hub on the first run.
-# This can take a few minutes and requires an internet connection.
 try:
     # Check for GPU availability and set the device accordingly.
-    # Using a GPU (device=0) will be significantly faster than CPU (device=-1).
     device = 0 if torch.cuda.is_available() else -1
     if device == 0:
         logger.info("GPU detected. Initializing AI model on GPU for faster processing.")
@@ -74,72 +72,97 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # --- Core Data Extraction Logic (AI-Powered) ---
 
 def clean_and_convert_to_float(text: str) -> float:
-    """Removes currency symbols, commas, and converts a string to a float."""
-    if not isinstance(text, str):
+    """
+    Robustly cleans and converts a string to a float. It finds all potential numbers
+    and returns the most likely one (usually the largest if multiple are present).
+    """
+    if not isinstance(text, str) or not any(char.isdigit() for char in text):
         return 0.0
-    # Remove common currency symbols, letters, and commas
-    cleaned_text = re.sub(r'[$,A-Za-z]', '', text).strip()
-    try:
-        return float(cleaned_text)
-    except (ValueError, TypeError):
+    
+    potential_numbers = re.findall(r'[\d,]+\.?\d*', text)
+    if not potential_numbers:
         return 0.0
+    
+    valid_numbers = []
+    for num_str in potential_numbers:
+        cleaned_str = num_str.replace(',', '').replace('$', '').strip()
+        if cleaned_str:
+            try:
+                valid_numbers.append(float(cleaned_str))
+            except ValueError:
+                continue
+            
+    return max(valid_numbers) if valid_numbers else 0.0
 
 def extract_data_with_ai(image: Image.Image) -> Dict[str, Any]:
     """
-    Uses the AI model to extract data from a document image by asking questions.
+    Uses a two-stage AI process: first classify the document, then extract data.
+    This is more robust than rule-based pre-filtering.
     """
     if not doc_qa_pipeline:
         raise RuntimeError("AI model is not available.")
 
     extracted_data = {"form_type": "unknown", "fields": {}}
+    CONFIDENCE_THRESHOLD = 0.5  # Increased threshold for higher quality answers
+
+    # --- Stage 1: AI-based Classification ---
+    classification_q = "What type of document is this: W-2, 1099-NEC, or 1099-INT?"
+    logger.info(f"Asking AI to classify document: '{classification_q}'")
+    classification_answers = doc_qa_pipeline(image=image, question=classification_q)
     
-    # Define questions for the AI model for each form type
+    detected_form_key = None
+    if classification_answers:
+        best_answer = sorted(classification_answers, key=lambda x: x['score'], reverse=True)[0]
+        answer_text = best_answer['answer'].upper()
+        score = best_answer['score']
+        logger.info(f"AI classification answer: '{answer_text}' (Score: {score:.2f})")
+
+        if score > CONFIDENCE_THRESHOLD:
+            if "W-2" in answer_text or "WAGE" in answer_text:
+                detected_form_key = "W-2"
+            elif "NEC" in answer_text:
+                detected_form_key = "1099-NEC"
+            elif "INT" in answer_text:
+                detected_form_key = "1099-INT"
+
+    if not detected_form_key:
+        logger.info("AI could not confidently classify the page as a target tax form. Skipping.")
+        return extracted_data
+
+    # --- Stage 2: Data Extraction for the Classified Form ---
+    extracted_data["form_type"] = detected_form_key
+    logger.info(f"Form confidently classified as {detected_form_key}. Proceeding with data extraction.")
+
     questions = {
         "W-2": {
-            "wages_tips_other_comp": "What is the value for wages, tips, other compensation?",
-            "federal_income_tax_withheld": "What is the federal income tax withheld?",
+            "wages_tips_other_comp": "What is the amount in box 1 for 'Wages, tips, other compensation'?",
+            "federal_income_tax_withheld": "What is the amount in box 2 for 'Federal income tax withheld'?",
         },
         "1099-NEC": {
-            "nonemployee_compensation": "What is the nonemployee compensation amount?",
+            "nonemployee_compensation": "What is the amount in box 1 for 'Nonemployee compensation'?",
         },
         "1099-INT": {
-            "interest_income": "What is the interest income?",
+            "interest_income": "What is the amount in box 1 for 'Interest Income'?",
         }
     }
 
-    # First, ask a classification question to identify the form
-    classification_q = "Is this document a W-2, a 1099-NEC, or a 1099-INT?"
-    form_type_answer = doc_qa_pipeline(image=image, question=classification_q)
-    
-    # Determine form type from the model's answer
-    detected_form_key = None
-    answer_text = form_type_answer[0]['answer'].upper()
-    if "W-2" in answer_text:
-        detected_form_key = "W-2"
-    elif "NEC" in answer_text:
-        detected_form_key = "1099-NEC"
-    elif "INT" in answer_text:
-        detected_form_key = "1099-INT"
-
-    if detected_form_key:
-        extracted_data["form_type"] = detected_form_key
-        logger.info(f"AI model classified document as: {detected_form_key}")
-        
-        # Ask the specific questions for the detected form type
-        for field, question in questions[detected_form_key].items():
-            logger.info(f"Asking AI: '{question}'")
-            answer = doc_qa_pipeline(image=image, question=question)
-            # The model may return multiple possible answers, we take the most confident one.
-            if answer:
-                field_value = clean_and_convert_to_float(answer[0]['answer'])
+    for field, question in questions[detected_form_key].items():
+        logger.info(f"Asking AI: '{question}'")
+        answer = doc_qa_pipeline(image=image, question=question)
+        if answer:
+            best_answer = sorted(answer, key=lambda x: x['score'], reverse=True)[0]
+            score = best_answer['score']
+            
+            if score >= CONFIDENCE_THRESHOLD:
+                field_value = clean_and_convert_to_float(best_answer['answer'])
                 extracted_data["fields"][field] = field_value
-                logger.info(f"AI answered: '{answer[0]['answer']}' -> Cleaned value: {field_value}")
-    else:
-        logger.warning(f"AI could not classify the document. Model answer: '{form_type_answer[0]['answer']}'")
-
+                logger.info(f"AI answered: '{best_answer['answer']}' (Score: {score:.2f}) -> Cleaned value: {field_value}")
+            else:
+                logger.warning(f"AI answer '{best_answer['answer']}' rejected due to low confidence score ({score:.2f}).")
+            
     return extracted_data
 
-# --- Tax Calculation and Form Generation (No changes needed here) ---
+# --- Tax Calculation and Form Generation ---
 
 def calculate_tax_liability(income: float, federal_withheld: float, filing_status: str) -> Dict[str, Any]:
     """Calculates federal tax liability based on 2024 IRS data."""
@@ -165,9 +188,67 @@ def calculate_tax_liability(income: float, federal_withheld: float, filing_statu
     }
 
 def generate_form_1040(tax_summary: Dict[str, Any], personal_info: Dict[str, Any], output_path: str):
-    """Generates a simplified, DRAFT Form 1040 PDF."""
+    """Generates a simplified, DRAFT Form 1040 PDF with populated fields."""
     c = canvas.Canvas(output_path, pagesize=letter)
-    # ... (form generation code is unchanged)
+    width, height = letter
+
+    # --- Header Information (Simplified) ---
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(72, height - 72, "DRAFT - Form 1040 (2024)")
+    c.setFont("Helvetica", 10)
+    c.drawString(72, height - 90, "This is a computer-generated draft for demonstration purposes only.")
+
+    # --- Personal Information ---
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(72, height - 120, "Filing Information")
+    c.setFont("Helvetica", 10)
+    c.drawString(72, height - 135, f"Filing Status: {personal_info.get('filing_status', 'N/A')}")
+    c.drawString(72, height - 150, f"Dependents: {personal_info.get('num_dependents', 'N/A')}")
+
+    # --- Income Section ---
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(72, height - 200, "Income & Deductions")
+    c.setFont("Helvetica", 10)
+    c.drawString(72, height - 215, f"Gross Income (from all forms):")
+    c.drawString(450, height - 215, f"${tax_summary.get('gross_income', 0.0):,.2f}")
+    
+    c.drawString(72, height - 230, f"Standard Deduction ({personal_info.get('filing_status', 'N/A')}):")
+    c.drawString(450, height - 230, f"${tax_summary.get('standard_deduction_applied', 0.0):,.2f}")
+
+    c.line(72, height - 240, 522, height - 240) # Separator line
+
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(72, height - 255, f"Taxable Income:")
+    c.drawString(450, height - 255, f"${tax_summary.get('taxable_income', 0.0):,.2f}")
+
+
+    # --- Tax & Payments ---
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(72, height - 300, "Tax, Payments, and Refund")
+    c.setFont("Helvetica", 10)
+    c.drawString(72, height - 315, f"Calculated Tax:")
+    c.drawString(450, height - 315, f"${tax_summary.get('calculated_tax', 0.0):,.2f}")
+    
+    c.drawString(72, height - 330, f"Total Federal Tax Withheld:")
+    c.drawString(450, height - 330, f"${tax_summary.get('total_federal_withheld', 0.0):,.2f}")
+
+    c.line(72, height - 340, 522, height - 340) # Separator line
+
+    # --- Final Result ---
+    c.setFont("Helvetica-Bold", 12)
+    final_amount = tax_summary.get('tax_due_or_refund', 0.0)
+    if final_amount < 0:
+        c.setFillColorRGB(0, 0.5, 0) # Green for refund
+        c.drawString(72, height - 360, f"Your Estimated REFUND:")
+        c.drawString(450, height - 360, f"${abs(final_amount):,.2f}")
+    else:
+        c.setFillColorRGB(0.8, 0, 0) # Red for amount owed
+        c.drawString(72, height - 360, f"Amount YOU OWE:")
+        c.drawString(450, height - 360, f"${final_amount:,.2f}")
+    
+    # This is the crucial step to finalize the page.
+    c.showPage()
+    # Now, save the PDF.
     c.save()
 
 # --- API Endpoints ---
@@ -190,14 +271,14 @@ async def upload_tax_documents(files: List[UploadFile] = File(...), filing_statu
             with open(temp_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
             logger.info(f"Temporarily saved {file.filename}")
 
-            # Process PDF to get images of each page
             doc = fitz.open(temp_path)
             for page_num, page in enumerate(doc):
-                logger.info(f"--- Processing Page {page_num + 1} of {file.filename} with AI model ---")
-                pix = page.get_pixmap(dpi=200) # Good balance of quality and speed
+                logger.info(f"--- Analyzing Page {page_num + 1} of {file.filename} ---")
+                
+                pix = page.get_pixmap(dpi=200)
                 image = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
 
-                # Use the new AI function for extraction
+                # Use the new AI function with AI-based classification
                 extracted_info = extract_data_with_ai(image)
                 
                 if extracted_info["form_type"] != "unknown":

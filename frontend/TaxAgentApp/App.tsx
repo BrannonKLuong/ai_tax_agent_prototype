@@ -11,151 +11,109 @@ import {
   Alert,
   ActivityIndicator,
   Platform,
+  TouchableOpacity,
 } from 'react-native';
 
 // Only import expo-document-picker if not on web, to avoid web-specific issues
 const DocumentPicker = Platform.OS !== 'web' ? require('expo-document-picker') : null;
 
-function App(): React.JSX.Element {
-  const backgroundStyle = {
-    backgroundColor: '#F3F3F3', // Light gray background for consistency
-  };
+// A simple card component for displaying extracted data
+const InfoCard = ({ title, data }) => (
+  <View style={styles.card}>
+    <Text style={styles.cardTitle}>{title}</Text>
+    {Object.entries(data).map(([key, value]) => (
+      <View style={styles.cardRow} key={key}>
+        <Text style={styles.cardKey}>{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}:</Text>
+        <Text style={styles.cardValue}>${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+      </View>
+    ))}
+  </View>
+);
 
-  const [selectedFiles, setSelectedFiles] = useState<any[]>([]); // Use 'any' for flexibility with web FileList
-  const [filingStatus, setFilingStatus] = useState<string>('');
-  const [numDependents, setNumDependents] = useState<string>('');
+function App(): React.JSX.Element {
+  const [selectedFiles, setSelectedFiles] = useState<any[]>([]);
+  const [filingStatus, setFilingStatus] = useState<string>('Single');
+  const [numDependents, setNumDependents] = useState<string>('0');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [responseMessage, setResponseMessage] = useState<string>('');
-  const [generatedFormLink, setGeneratedFormLink] = useState<string | null>(null); // State for the download link
+  const [taxSummary, setTaxSummary] = useState<any>(null);
+  const [processedSummary, setProcessedSummary] = useState<any[]>([]);
+  const [generatedFormLink, setGeneratedFormLink] = useState<string | null>(null);
 
-  const fileInputRef = useRef<HTMLInputElement>(null); // Ref for web file input
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const pickDocuments = async () => {
     if (Platform.OS === 'web') {
-      // For web, programmatically click the hidden input
-      if (fileInputRef.current) {
-        fileInputRef.current.click();
-      }
+      fileInputRef.current?.click();
       return;
     }
-
-    // For mobile (iOS/Android) using expo-document-picker
     try {
-      if (DocumentPicker) { // Ensure DocumentPicker is loaded
-        const result = await DocumentPicker.getMultipleDocsAsync({
-          type: 'application/pdf', // Use the MIME type string directly
-        });
-
-        if (result.canceled) {
-          console.log('User cancelled document selection');
-          setResponseMessage('Document selection cancelled.');
-        } else {
+      if (DocumentPicker) {
+        const result = await DocumentPicker.getMultipleDocsAsync({ type: 'application/pdf' });
+        if (!result.canceled) {
           setSelectedFiles(result.assets || []);
-          setResponseMessage(`Selected ${result.assets?.length || 0} file(s).`);
         }
       }
     } catch (err) {
-      console.error('DocumentPicker Error:', err);
       Alert.alert('Error', 'Failed to pick documents.');
-      setResponseMessage('Error picking documents.');
     }
   };
 
-  // Handler for web file input change
   const handleWebFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files) {
       const filesArray = Array.from(event.target.files).map(file => ({
-        uri: URL.createObjectURL(file), // Create a blob URL for preview if needed
+        uri: URL.createObjectURL(file),
         name: file.name,
         type: file.type,
         size: file.size,
-        fileObject: file, // Store the actual File object for FormData
+        fileObject: file,
       }));
       setSelectedFiles(filesArray);
-      setResponseMessage(`Selected ${filesArray.length} file(s).`);
     }
   };
 
   const processDocuments = async () => {
-    if (!selectedFiles || selectedFiles.length === 0) {
+    if (selectedFiles.length === 0) {
       Alert.alert('Validation Error', 'Please select at least one PDF tax document.');
       return;
     }
-    if (!filingStatus.trim()) {
-      Alert.alert('Validation Error', 'Please enter your filing status (e.g., Single, MFJ).');
+    if (!filingStatus.trim() || !numDependents.trim()) {
+      Alert.alert('Validation Error', 'Please complete all personal information fields.');
       return;
-    }
-    if (!numDependents.trim() || isNaN(parseInt(numDependents, 10))) {
-        Alert.alert('Validation Error', 'Please enter a valid number of dependents.');
-        return;
     }
 
     setIsLoading(true);
-    setResponseMessage('Processing documents...');
-    setGeneratedFormLink(null); // Clear previous link
+    setResponseMessage('AI is analyzing your documents... this may take a moment.');
+    setTaxSummary(null);
+    setProcessedSummary([]);
+    setGeneratedFormLink(null);
 
     const formData = new FormData();
-    selectedFiles.forEach((file) => {
-      if (file) {
-        // For web, use the actual File object stored in file.fileObject
-        // For mobile, use the uri and name properties
-        if (Platform.OS === 'web' && file.fileObject) {
-          formData.append('files', file.fileObject);
-        } else {
-          formData.append('files', {
-            uri: file.uri,
-            name: file.name,
-            type: file.type || 'application/pdf',
-          } as any);
-        }
-      }
+    selectedFiles.forEach(file => {
+      formData.append('files', Platform.OS === 'web' ? file.fileObject : { uri: file.uri, name: file.name, type: 'application/pdf' } as any);
     });
-
     formData.append('filing_status', filingStatus);
     formData.append('num_dependents', numDependents);
 
     try {
       const backendUrl = Platform.OS === 'android' ? 'http://10.0.2.2:8000/upload-tax-documents/' : 'http://localhost:8000/upload-tax-documents/';
-      
-      const response = await fetch(backendUrl, {
-        method: 'POST',
-        body: formData,
-        // 'Content-Type': 'multipart/form-data' is usually automatically set by fetch when using FormData
-        // but it's good to be explicit for debugging if issues arise.
-      });
-
+      const response = await fetch(backendUrl, { method: 'POST', body: formData });
       const data = await response.json();
+
       if (response.ok) {
-        let success_msg = `Success! ${data.message}`;
-        if (data.tax_summary) {
-          // Corrected JavaScript formatting for numbers
-          success_msg += `\nGross Income: $${data.tax_summary.gross_income.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-          success_msg += `\nTaxable Income: $${data.tax_summary.taxable_income.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-          success_msg += `\nCalculated Tax: $${data.tax_summary.calculated_tax.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-          success_msg += `\nTotal Withheld: $${data.tax_summary.total_federal_withheld.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-          if (data.tax_summary.tax_due_or_refund < 0) {
-              success_msg += `\nRefund: $${Math.abs(data.tax_summary.tax_due_or_refund).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-          } else {
-              success_msg += `\nTax Due: $${data.tax_summary.tax_due_or_refund.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-          }
-        }
-        setResponseMessage(success_msg);
-        Alert.alert('Success', success_msg);
-
-
-        // Store the download link if provided by backend
+        setResponseMessage(data.message);
+        setTaxSummary(data.tax_summary);
+        setProcessedSummary(data.processed_files_summary || []);
         if (data.form_1040_download_link) {
-            setGeneratedFormLink(data.form_1040_download_link);
+          setGeneratedFormLink(data.form_1040_download_link);
         }
-
       } else {
         setResponseMessage(`Error: ${data.detail || 'Unknown error'}`);
         Alert.alert('Error', `Failed to process documents: ${data.detail || 'Unknown error'}`);
       }
     } catch (error) {
       console.error('Network or processing error:', error);
-      Alert.alert('Network Error', 'Could not connect to the backend or process documents.');
+      Alert.alert('Network Error', 'Could not connect to the backend.');
       setResponseMessage('Network or processing error.');
     } finally {
       setIsLoading(false);
@@ -163,85 +121,61 @@ function App(): React.JSX.Element {
   };
 
   return (
-    <SafeAreaView style={[backgroundStyle, styles.container]}>
-      <StatusBar />
-      <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
-        style={backgroundStyle}>
-        <View style={styles.sectionContainer}>
-          <Text style={styles.sectionTitle}>AI Tax Return Agent</Text>
-          <Text style={styles.sectionDescription}>
-            Upload your W-2, 1099-INT, and 1099-NEC PDFs.
-          </Text>
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar barStyle="dark-content" />
+      <ScrollView contentInsetAdjustmentBehavior="automatic" style={styles.scrollView}>
+        <View style={styles.container}>
+          <Text style={styles.headerTitle}>AI Tax Agent</Text>
+          <Text style={styles.headerSubtitle}>Upload your tax forms to automatically calculate your return.</Text>
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Filing Status (e.g., Single, MFJ):</Text>
-            <TextInput
-              style={styles.input}
-              onChangeText={setFilingStatus}
-              value={filingStatus}
-              placeholder="e.g., Single"
-              autoCapitalize="words"
-            />
+          <View style={styles.inputSection}>
+            <Text style={styles.label}>Filing Status</Text>
+            <TextInput style={styles.input} onChangeText={setFilingStatus} value={filingStatus} placeholder="e.g., Single" />
+            <Text style={styles.label}>Number of Dependents</Text>
+            <TextInput style={styles.input} onChangeText={setNumDependents} value={numDependents} placeholder="e.g., 0" keyboardType="numeric" />
           </View>
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Number of Dependents:</Text>
-            <TextInput
-              style={styles.input}
-              onChangeText={setNumDependents}
-              value={numDependents}
-              placeholder="e.g., 0"
-              keyboardType="numeric"
-            />
-          </View>
-
-          {/* Conditional rendering for file input */}
-          {Platform.OS === 'web' ? (
-            <View>
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleWebFileChange}
-                style={{ display: 'none' }} // Hide the default input
-                multiple
-                accept="application/pdf"
-              />
-              <Button title="Select Tax Documents (PDFs)" onPress={pickDocuments} disabled={isLoading} />
-            </View>
-          ) : (
-            <Button title="Select Tax Documents (PDFs)" onPress={pickDocuments} disabled={isLoading} />
+          {Platform.OS === 'web' && (
+            <input type="file" ref={fileInputRef} onChange={handleWebFileChange} style={{ display: 'none' }} multiple accept="application/pdf" />
           )}
+          <TouchableOpacity style={styles.button} onPress={pickDocuments} disabled={isLoading}>
+            <Text style={styles.buttonText}>Select Documents</Text>
+          </TouchableOpacity>
 
-          {selectedFiles && selectedFiles.length > 0 && (
+          {selectedFiles.length > 0 && (
             <Text style={styles.selectedFilesText}>
-              Selected files: {selectedFiles.map(f => f?.name).filter(Boolean).join(', ')}
+              {selectedFiles.length} file(s) selected: {selectedFiles.map(f => f.name).join(', ')}
             </Text>
           )}
 
-          <View style={styles.buttonSpacing} />
+          <TouchableOpacity style={[styles.button, styles.processButton]} onPress={processDocuments} disabled={isLoading || selectedFiles.length === 0}>
+            <Text style={styles.buttonText}>{isLoading ? "Processing..." : "Calculate Tax Return"}</Text>
+          </TouchableOpacity>
 
-          <Button
-            title={isLoading ? "Processing..." : "Process Tax Documents"}
-            onPress={processDocuments}
-            disabled={isLoading || !selectedFiles || selectedFiles.length === 0 || !filingStatus.trim() || !numDependents.trim()}
-            color="#4CAF50" // Green for "Process"
-          />
+          {isLoading && <ActivityIndicator size="large" color="#007AFF" style={styles.loadingIndicator} />}
+          {responseMessage && !isLoading && <Text style={styles.responseMessage}>{responseMessage}</Text>}
 
-          {isLoading && <ActivityIndicator size="large" color="#0000ff" style={styles.loadingIndicator} />}
+          {taxSummary && (
+            <View style={styles.resultsSection}>
+              <Text style={styles.resultsTitle}>Tax Calculation Summary</Text>
+              <InfoCard title="Final Calculation" data={taxSummary} />
 
-          {responseMessage ? (
-            <Text style={styles.responseMessage}>{responseMessage}</Text>
-          ) : null}
+              <Text style={styles.resultsTitle}>Extracted Data from Documents</Text>
+              {processedSummary.length > 0 ? (
+                processedSummary.map((item, index) => (
+                  <InfoCard key={index} title={`Form: ${item.form_type}`} data={item.fields} />
+                ))
+              ) : (
+                <Text>No data was extracted from the documents.</Text>
+              )}
 
-          {generatedFormLink ? (
-            <View style={styles.downloadSection}>
-              <Text style={styles.downloadText}>Your Form 1040 is ready:</Text>
-              <Button title="Download Form 1040" onPress={() => window.open(`http://localhost:8000${generatedFormLink}`, '_blank')} />
-              {/* Note: For mobile, window.open might open in external browser. Consider using Linking from react-native */}
+              {generatedFormLink && (
+                <TouchableOpacity style={[styles.button, styles.downloadButton]} onPress={() => window.open(`http://localhost:8000${generatedFormLink}`, '_blank')}>
+                  <Text style={styles.buttonText}>Download Form 1040 PDF</Text>
+                </TouchableOpacity>
+              )}
             </View>
-          ) : null}
-
+          )}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -249,74 +183,53 @@ function App(): React.JSX.Element {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    padding: 20,
-  },
-  sectionContainer: {
-    marginTop: 32,
-    paddingHorizontal: 24,
-  },
-  sectionTitle: {
-    fontSize: 24,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  sectionDescription: {
-    marginTop: 8,
-    fontSize: 18,
-    fontWeight: '400',
-    color: '#666',
-    marginBottom: 24,
-    textAlign: 'center',
-  },
-  inputGroup: {
+  safeArea: { flex: 1, backgroundColor: '#F0F4F8' },
+  scrollView: { backgroundColor: '#F0F4F8' },
+  container: { padding: 20 },
+  headerTitle: { fontSize: 32, fontWeight: 'bold', color: '#1A202C', textAlign: 'center' },
+  headerSubtitle: { fontSize: 16, color: '#4A5568', textAlign: 'center', marginBottom: 30 },
+  inputSection: { marginBottom: 20 },
+  label: { fontSize: 16, color: '#2D3748', marginBottom: 8 },
+  input: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#CBD5E0',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    color: '#1A202C',
     marginBottom: 15,
   },
-  label: {
-    fontSize: 16,
-    marginBottom: 5,
-    color: '#333',
-  },
-  input: {
-    height: 40,
-    borderColor: 'gray',
-    borderWidth: 1,
-    paddingHorizontal: 10,
-    borderRadius: 5,
-    color: '#333',
-  },
-  selectedFilesText: {
-    marginTop: 10,
-    fontSize: 14,
-    color: '#666',
-  },
-  buttonSpacing: {
-    height: 20,
-  },
-  loadingIndicator: {
-    marginTop: 20,
-  },
-  responseMessage: {
-    marginTop: 20,
-    fontSize: 14,
-    color: '#666',
-    textAlign: 'center',
-  },
-  downloadSection: {
-    marginTop: 30,
-    paddingTop: 20,
-    borderTopWidth: 1,
-    borderTopColor: '#ccc',
+  button: {
+    backgroundColor: '#4299E1',
+    padding: 15,
+    borderRadius: 8,
     alignItems: 'center',
+    marginBottom: 15,
   },
-  downloadText: {
-    fontSize: 16,
-    marginBottom: 10,
-    color: '#333',
-  }
+  processButton: { backgroundColor: '#48BB78' },
+  downloadButton: { backgroundColor: '#A0AEC0', marginTop: 20 },
+  buttonText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold' },
+  selectedFilesText: { textAlign: 'center', color: '#4A5568', marginBottom: 20, fontStyle: 'italic' },
+  loadingIndicator: { marginVertical: 20 },
+  responseMessage: { textAlign: 'center', color: '#2D3748', fontSize: 16, marginVertical: 10 },
+  resultsSection: { marginTop: 30, borderTopWidth: 1, borderTopColor: '#E2E8F0', paddingTop: 20 },
+  resultsTitle: { fontSize: 22, fontWeight: 'bold', color: '#1A202C', marginBottom: 15 },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    padding: 15,
+    marginBottom: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  cardTitle: { fontSize: 18, fontWeight: 'bold', color: '#2D3748', marginBottom: 10, borderBottomWidth: 1, borderBottomColor: '#E2E8F0', paddingBottom: 5 },
+  cardRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 },
+  cardKey: { fontSize: 16, color: '#4A5568' },
+  cardValue: { fontSize: 16, color: '#1A202C', fontWeight: '500' },
 });
 
 export default App;
