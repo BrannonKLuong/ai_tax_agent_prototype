@@ -96,7 +96,7 @@ function App(): React.JSX.Element {
     formData.append('num_dependents', numDependents);
 
     try {
-      const backendUrl = Platform.OS === 'android' ? 'http://10.0.2.2:8000/upload-tax-documents/' : 'http://localhost:8000/upload-tax-documents/';
+      const backendUrl = 'https://ai-tax-agent-prototype.onrender.com/upload-tax-documents/';
       const response = await fetch(backendUrl, { method: 'POST', body: formData });
       const data = await response.json();
 
