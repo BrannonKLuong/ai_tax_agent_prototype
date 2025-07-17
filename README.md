@@ -6,7 +6,10 @@ This project is a functional, end-to-end prototype of an AI agent that automates
 
 ![AI Tax Agent Demo](assets/AI_Tax_Agent_Gif.gif)
 
-![iOS image Example](assets/IMG_5358.png)
+## Screenshot
+
+<img src="assets/IMG_5358.png" width="350">
+
 ## Features
 
 * **Cross-Platform Frontend**: Built with React Native, allowing it to run on web browsers, iOS, and Android.
