@@ -32,7 +32,7 @@ app = FastAPI()
 origins = [
     "http://localhost:8081", # For local web development
     "http://127.0.0.1:8081",
-    "https://your-netlify-app-name.netlify.app", # ** IMPORTANT: REPLACE THIS WITH YOUR ACTUAL NETLIFY URL **
+    "https://sunny-florentine-b9e9cf.netlify.app", # ** IMPORTANT: REPLACE THIS WITH YOUR ACTUAL NETLIFY URL **
 ]
 
 app.add_middleware(
