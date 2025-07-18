@@ -28,11 +28,11 @@ app = FastAPI()
 
 # --- CORS Configuration ---
 # This list tells your backend which frontend URLs are allowed to make requests.
-# We've added a placeholder for your new Netlify site.
+# We have now added your live Netlify site URL.
 origins = [
     "http://localhost:8081", # For local web development
     "http://127.0.0.1:8081",
-    "https://sunny-florentine-b9e9cf.netlify.app", # ** IMPORTANT: REPLACE THIS WITH YOUR ACTUAL NETLIFY URL **
+    "https://sunny-florentine-b9e9cf.netlify.app", # Your live frontend URL
 ]
 
 app.add_middleware(
@@ -62,7 +62,7 @@ STANDARD_DEDUCTIONS = {
     "Head of Household": 21900, "HoH": 21900,
 }
 TAX_BRACKETS_2024 = {
-    "Single": [(0, 11600, 0.10), (11601, 47150, 0.12), (47151, 100525, 0.22), (100526, 191950, 0.24), (191951, 243725, 0.32), (243726, 609350, 0.35), (609351, float('inf'), 0.37)],
+    "Single": [(0, 11600, 0.10), (11601, 47150, 0.12), (47151, 100525, 0.22), (100526, 191950, 0.24), (19151, 243725, 0.32), (243726, 609350, 0.35), (609351, float('inf'), 0.37)],
     "Married Filing Jointly": [(0, 23200, 0.10), (23201, 94300, 0.12), (94301, 201050, 0.22), (201051, 383900, 0.24), (383901, 487450, 0.32), (487451, 731200, 0.35), (731201, float('inf'), 0.37)],
     "Married Filing Separately": [(0, 11600, 0.10), (11601, 47150, 0.12), (47151, 100525, 0.22), (100526, 191950, 0.24), (191951, 243725, 0.32), (243726, 365600, 0.35), (365601, float('inf'), 0.37)],
     "Head of Household": [(0, 16550, 0.10), (16551, 63100, 0.12), (63101, 100500, 0.22), (100501, 191950, 0.24), (191951, 243700, 0.32), (243701, 609350, 0.35), (609351, float('inf'), 0.37)]
