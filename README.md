@@ -87,7 +87,7 @@ This project is a functional, end-to-end prototype of an AI agent that automates
         ```
     * Expo will start the development server.
 3.  **Use the App:**
-    * The application is fully functional on the **web**. Open it in your browser at [!AI Demo](https://sunny-florentine-b9e9cf.netlify.app/) [![Netlify Status](https://api.netlify.com/api/v1/badges/ffaf6e98-2279-4f0f-895a-fbdd255bc426/deploy-status)](https://app.netlify.com/projects/sunny-florentine-b9e9cf/deploys).
+    * The application is fully functional on the **web**. Open it in your browser at [AI Demo](https://sunny-florentine-b9e9cf.netlify.app/) [![Netlify Status](https://api.netlify.com/api/v1/badges/ffaf6e98-2279-4f0f-895a-fbdd255bc426/deploy-status)](https://app.netlify.com/projects/sunny-florentine-b9e9cf/deploys).
     * Enter your filing status and number of dependents.
     * Click "Select Documents" to upload your sample PDF tax forms.
     * Click "Calculate Tax Return" to send the files to the backend for AI processing.
